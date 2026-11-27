@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OOP Platformer Game</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1e1e2e;
+            color: #cdd6f4;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        canvas {
+            background-color: #89b4fa;
+            border: 4px solid #313244;
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .controls {
+            margin-top: 12px;
+            font-size: 14px;
+            color: #a6adc8;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas" width="800" height="450"></canvas>
+    <div class="controls">
+        이동: <b>← / →</b> 또는 <b>A / D</b> | 점프: <b>Space / W / ↑</b> (꾹 누르면 더 높이 점프) | 재시작: <b>R</b>
+    </div>
+
+<script>
+/**
+ * ==========================================
+ * 1. 인터페이스 정의 (규약 및 검사 유틸리티)
+ * ==========================================
+ */
+const Interfaces = {
+    IDamageable: ['takeDamage'],
+    ICollectible: ['collect'],
+    IStompable: ['onStomp'],
+    IHarmful: ['getDamage']
+};
+
+function implementsInterface(obj, interfaceName) {
+    const methods = Interfaces[interfaceName];
+    if (!methods) return false;
+    return methods.every(method => typeof obj[method] === 'function');
+}
+
+/**
+ * ==========================================
+ * 2. 추상 클래스: Entity
+ * ==========================================
+ */
+class Entity {
+    constructor(x, y, width, height, color) {
+        if (new.target === Entity) {
+            throw new Error("추상 클래스 Entity는 직접 인스턴스화할 수 없습니다.");
+        }
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+        this.color = color;
+        this.vx = 0;
+        this.vy = 0;
+        this.markedForDeletion = false;
+    }
+
+    update(dt, game) {
+        throw new Error("update() 메서드를 구현해야 합니다.");
+    }
+
+    render(ctx) {
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+    }
+
+    getBounds() {
+        return {
+            left: this.x,
+            right: this.x + this.width,
+            top: this.y,
+            bottom: this.y + this.height
+        };
+    }
+
+    intersects(other) {
+        const a = this.getBounds();
+        const b = other.getBounds();
+        return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    }
+}
+
+/**
+ * ==========================================
+ * 3. 지형 및 오브젝트 클래스
+ * ==========================================
+ */
+class Block extends Entity {
+    constructor(x, y, width, height, color = '#585b70') {
+        super(x, y, width, height, color);
+    }
+    update(dt, game) {}
+}
+
+class MovingPlatform extends Block {
+    constructor(x, y, width, height, moveX, moveY, speed) {
+        super(x, y, width, height, '#f9e2af');
+        this.startX = x;
+        this.startY = y;
+        this.moveX = moveX;
+        this.moveY = moveY;
+        this.speed = speed;
+        this.time = 0;
+        this.dx = 0;
+        this.dy = 0;
+    }
+
+    update(dt, game) {
+        const prevX = this.x;
+        const prevY = this.y;
+        this.time += dt * this.speed;
+
+        this.x = this.startX + Math.sin(this.time) * this.moveX;
+        this.y = this.startY + Math.sin(this.time) * this.moveY;
+
+        this.dx = this.x - prevX;
+        this.dy = this.y - prevY;
+    }
+}
+
+class Spikes extends Entity {
+    constructor(x, y, width, height) {
+        super(x, y, width, height, '#f38ba8');
+    }
+
+    getDamage() {
+        return 1;
+    }
+
+    update(dt, game) {}
+
+    render(ctx) {
+        ctx.fillStyle = this.color;
+        const spikeWidth = 10;
+        const count = Math.floor(this.width / spikeWidth);
+        for (let i = 0; i < count; i++) {
+            ctx.beginPath();
+            ctx.moveTo(this.x + i * spikeWidth, this.y + this.height);
+            ctx.lineTo(this.x + i * spikeWidth + spikeWidth / 2, this.y);
+            ctx.lineTo(this.x + (i + 1) * spikeWidth, this.y + this.height);
+            ctx.closePath();
+            ctx.fill();
+        }
+    }
+}
+
+class Coin extends Entity {
+    constructor(x, y) {
+        super(x, y, 20, 20, '#f9e2af');
+        this.baseY = y;
+        this.bobTime = Math.random() * Math.PI * 2;
+    }
+
+    collect(player) {
+        this.markedForDeletion = true;
+        player.score += 100;
+    }
+
+    update(dt, game) {
+        this.bobTime += dt * 5;
+        this.y = this.baseY + Math.sin(this.bobTime) * 4;
+    }
+
+    render(ctx) {
+        ctx.fillStyle = '#f9e2af';
+        ctx.beginPath();
+        ctx.arc(this.x + this.width / 2, this.y + this.height / 2, this.width / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#fab387';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+}
+
+class Spring extends Entity {
+    constructor(x, y) {
+        super(x, y, 30, 15, '#a6e3a1');
+        this.bounceForce = -850;
+        this.compressed = 0;
+    }
+
+    onStomp(player) {
+        player.vy = this.bounceForce;
+        player.isGrounded = false;
+        this.compressed = 0.2;
+    }
+
+    update(dt, game) {
+        if (this.compressed > 0) {
+            this.compressed -= dt;
+        }
+    }
+
+    render(ctx) {
+        const offset = this.compressed > 0 ? 6 : 0;
+        ctx.fillStyle = '#9399b2';
+        ctx.fillRect(this.x + 5, this.y + offset, this.width - 10, this.height - offset);
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y + offset, this.width, 6);
+    }
+}
+
+/**
+ * ==========================================
+ * 4. 적(Enemy) 계층 구조
+ * ==========================================
+ */
+class Enemy extends Entity {
+    constructor(x, y, width, height, color) {
+        super(x, y, width, height, color);
+        if (new.target === Enemy) {
+            throw new Error("Enemy는 직접 인스턴스화할 수 없습니다.");
+        }
+    }
+
+    getDamage() {
+        return 1;
+    }
+}
+
+class Walker extends Enemy {
+    constructor(x, y, range) {
+        super(x, y, 32, 32, '#eba0ac');
+        this.startX = x;
+        this.range = range;
+        this.vx = 80;
+        this.hp = 1;
+    }
+
+    takeDamage(amount) {
+        this.hp -= amount;
+        if (this.hp <= 0) {
+            this.markedForDeletion = true;
+        }
+    }
+
+    onStomp(player) {
+        this.takeDamage(1);
+        player.vy = -450;
+        player.score += 200;
+    }
+
+    update(dt, game) {
+        this.x += this.vx * dt;
+        if (this.x > this.startX + this.range) {
+            this.x = this.startX + this.range;
+            this.vx *= -1;
+        } else if (this.x < this.startX) {
+            this.x = this.startX;
+            this.vx *= -1;
+        }
+    }
+
+    render(ctx) {
+        super.render(ctx);
+        ctx.fillStyle = '#11111b';
+        const eyeX = this.vx > 0 ? this.x + 20 : this.x + 6;
+        ctx.fillRect(eyeX, this.y + 8, 6, 6);
+    }
+}
+
+class SpikyFlyer extends Enemy {
+    constructor(x, y, rangeY) {
+        super(x, y, 34, 28, '#cba6f7');
+        this.startY = y;
+        this.rangeY = rangeY;
+        this.time = 0;
+    }
+
+    update(dt, game) {
+        this.time += dt * 3;
+        this.y = this.startY + Math.sin(this.time) * this.rangeY;
+    }
+
+    render(ctx) {
+        super.render(ctx);
+        ctx.fillStyle = '#f38ba8';
+        ctx.beginPath();
+        ctx.moveTo(this.x + 4, this.y);
+        ctx.lineTo(this.x + this.width / 2, this.y - 10);
+        ctx.lineTo(this.x + this.width - 4, this.y);
+        ctx.closePath();
+        ctx.fill();
+    }
+}
+
+/**
+ * ==========================================
+ * 5. 플레이어 클래스 (IDamageable 구현)
+ * ==========================================
+ */
+class Player extends Entity {
+    constructor(x, y) {
+        super(x, y, 28, 36, '#89dceb');
+        this.speed = 270;
+        this.jumpForce = -620;
+        this.gravity = 1350;
+        this.isGrounded = false;
+        this.coyoteTimer = 0;
+        this.hp = 3;
+        this.score = 0;
+        this.invulnerableTimer = 0;
+        this.standingPlatform = null;
+    }
+
+    takeDamage(amount) {
+        if (this.invulnerableTimer > 0) return;
+        this.hp -= amount;
+        this.invulnerableTimer = 1.2;
+        this.vy = -320;
+    }
+
+    handleInput(input) {
+        this.vx = 0;
+        if (input.isDown('ArrowLeft') || input.isDown('KeyA')) {
+            this.vx = -this.speed;
+        }
+        if (input.isDown('ArrowRight') || input.isDown('KeyD')) {
+            this.vx = this.speed;
+        }
+
+        const jumpPressed = input.isDown('Space') || input.isDown('ArrowUp') || input.isDown('KeyW');
+        if (jumpPressed && (this.isGrounded || this.coyoteTimer > 0)) {
+            this.vy = this.jumpForce;
+            this.isGrounded = false;
+            this.coyoteTimer = 0;
+            this.standingPlatform = null;
+        }
+    }
+
+    update(dt, game) {
+        if (this.invulnerableTimer > 0) {
+            this.invulnerableTimer -= dt;
+        }
+
+        if (this.isGrounded) {
+            this.coyoteTimer = 0.1;
+        } else if (this.coyoteTimer > 0) {
+            this.coyoteTimer -= dt;
+        }
+
+        if (this.isGrounded && this.standingPlatform) {
+            this.x += this.standingPlatform.dx;
+            this.y += this.standingPlatform.dy;
+        }
+
+        // 1. X축 이동 및 블록 충돌
+        this.x += this.vx * dt;
+        if (this.x < 0) this.x = 0;
+        if (this.x + this.width > game.width) this.x = game.width - this.width;
+        this.resolveBlockCollisionsX(game.blocks);
+
+        // 2. Y축 이동(중력) 및 블록 충돌
+        this.vy += this.gravity * dt;
+        this.y += this.vy * dt;
+        this.isGrounded = false;
+        this.standingPlatform = null;
+        this.resolveBlockCollisionsY(game.blocks);
+
+        if (this.y > game.height + 50) {
+            this.hp = 0;
+        }
+    }
+
+    resolveBlockCollisionsX(blocks) {
+        for (const block of blocks) {
+            if (this.intersects(block)) {
+                if (this.vx > 0) {
+                    this.x = block.x - this.width;
+                } else if (this.vx < 0) {
+                    this.x = block.x + block.width;
+                }
+            }
+        }
+    }
+
+    resolveBlockCollisionsY(blocks) {
+        for (const block of blocks) {
+            if (this.intersects(block)) {
+                if (this.vy > 0) {
+                    this.y = block.y - this.height;
+                    this.vy = 0;
+                    this.isGrounded = true;
+                    if (block instanceof MovingPlatform) {
+                        this.standingPlatform = block;
+                    }
+                } else if (this.vy < 0) {
+                    this.y = block.y + block.height;
+                    this.vy = 0;
+                }
+            }
+        }
+    }
+
+    render(ctx) {
+        if (this.invulnerableTimer > 0 && Math.floor(this.invulnerableTimer * 15) % 2 === 0) {
+            return;
+        }
+        super.render(ctx);
+    }
+}
+
+/**
+ * ==========================================
+ * 6. 입력 관리자 (Input)
+ * ==========================================
+ */
+class InputHandler {
+    constructor() {
+        this.keys = {};
+        window.addEventListener('keydown', (e) => {
+            if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+                e.preventDefault();
+            }
+            this.keys[e.code] = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            this.keys[e.code] = false;
+        });
+    }
+
+    isDown(code) {
+        return !!this.keys[code];
+    }
+}
+
+/**
+ * ==========================================
+ * 7. 게임 엔진 (입력 -> 갱신 -> 렌더링 루프)
+ * ==========================================
+ */
+class Game {
+    constructor(canvas) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.width = canvas.width;
+        this.height = canvas.height;
+        this.input = new InputHandler();
+        this.lastTime = 0;
+        this.init();
+    }
+
+    init() {
+        this.isGameOver = false;
+        this.player = new Player(50, 300);
+
+        this.blocks = [
+            new Block(0, 410, 320, 40),
+            new Block(380, 410, 420, 40),
+            new Block(170, 315, 130, 20),
+            new MovingPlatform(330, 240, 105, 18, 65, 0, 2),
+            new Block(540, 205, 190, 20)
+        ];
+
+        this.entities = [
+            new Spring(255, 300),
+            new Spikes(450, 395, 60, 15),
+            new Walker(550, 378, 180),
+            new SpikyFlyer(510, 135, 35),
+            new Coin(210, 275),
+            new Coin(370, 190),
+            new Coin(590, 165),
+            new Coin(640, 165),
+            new Coin(700, 370)
+        ];
+    }
+
+    processInput() {
+        if (this.isGameOver) {
+            if (this.input.isDown('KeyR')) {
+                this.init();
+            }
+            return;
+        }
+        this.player.handleInput(this.input);
+    }
+
+    update(dt) {
+        if (this.isGameOver) return;
+
+        for (const block of this.blocks) {
+            block.update(dt, this);
+        }
+        for (const entity of this.entities) {
+            entity.update(dt, this);
+        }
+
+        this.player.update(dt, this);
+
+        for (const entity of this.entities) {
+            if (entity.markedForDeletion || !this.player.intersects(entity)) continue;
+
+            if (implementsInterface(entity, 'ICollectible')) {
+                entity.collect(this.player);
+                continue;
+            }
+
+            const isFallingOnTop = this.player.vy > 0 && 
+                                   (this.player.y + this.player.height - this.player.vy * dt) <= entity.y + 12;
+
+            if (implementsInterface(entity, 'IStompable') && isFallingOnTop) {
+                entity.onStomp(this.player);
+                continue;
+            }
+
+            if (implementsInterface(entity, 'IHarmful') && implementsInterface(this.player, 'IDamageable')) {
+                this.player.takeDamage(entity.getDamage());
+            }
+        }
+
+        this.entities = this.entities.filter(e => !e.markedForDeletion);
+
+        if (this.player.hp <= 0) {
+            this.isGameOver = true;
+        }
+    }
+
+    render() {
+        this.ctx.clearRect(0, 0, this.width, this.height);
+
+        for (const block of this.blocks) {
+            block.render(this.ctx);
+        }
+
+        for (const entity of this.entities) {
+            entity.render(this.ctx);
+        }
+
+        this.player.render(this.ctx);
+
+        this.ctx.fillStyle = '#11111b';
+        this.ctx.font = 'bold 18px sans-serif';
+        this.ctx.fillText(`HP: ${'❤️'.repeat(Math.max(0, this.player.hp))}`, 20, 32);
+        this.ctx.fillText(`SCORE: ${this.player.score}`, 20, 58);
+
+        if (this.isGameOver) {
+            this.ctx.fillStyle = 'rgba(17, 17, 27, 0.75)';
+            this.ctx.fillRect(0, 0, this.width, this.height);
+
+            this.ctx.fillStyle = '#f38ba8';
+            this.ctx.font = 'bold 40px sans-serif';
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText('GAME OVER', this.width / 2, this.height / 2 - 10);
+
+            this.ctx.fillStyle = '#cdd6f4';
+            this.ctx.font = '20px sans-serif';
+            this.ctx.fillText('R 키를 눌러 다시 시작', this.width / 2, this.height / 2 + 30);
+            this.ctx.textAlign = 'left';
+        }
+    }
+
+    loop(timestamp) {
+        const dt = Math.min((timestamp - this.lastTime) / 1000, 0.05);
+        this.lastTime = timestamp;
+
+        this.processInput();
+        this.update(dt);
+        this.render();
+
+        requestAnimationFrame((t) => this.loop(t));
+    }
+
+    start() {
+        requestAnimationFrame((t) => {
+            this.lastTime = t;
+            this.loop(t);
+        });
+    }
+}
+
+const canvas = document.getElementById('gameCanvas');
+const game = new Game(canvas);
+game.start();
+</script>
+</body>
+</html>
